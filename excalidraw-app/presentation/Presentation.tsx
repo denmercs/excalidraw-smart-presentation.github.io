@@ -312,11 +312,33 @@ export function Presentation() {
   }, []);
 
   const frames = useMemo(() => {
-    const res = elements.filter(
+    const all = elements.filter(
       (e): e is ExcalidrawFrameElement => e.type === "frame",
     );
-    res.sort((e1, e2) => e1.y - e2.y);
-    return res;
+    if (all.length === 0) {
+      return all;
+    }
+    // Group frames by progressive-reveal sequence (same generatedFromOverviewFrameId).
+    // Standalone frames (no id) are each their own one-frame sequence.
+    type FrameWithCustom = ExcalidrawFrameElement & {
+      customData?: { generatedFromOverviewFrameId?: string };
+    };
+    const bySequence = new Map<string, ExcalidrawFrameElement[]>();
+    for (const f of all) {
+      const key =
+        (f as FrameWithCustom).customData?.generatedFromOverviewFrameId ?? f.id;
+      const list = bySequence.get(key) ?? [];
+      list.push(f);
+      bySequence.set(key, list);
+    }
+    // Sort frames within each sequence by y, then sort sequences by topmost y.
+    const sequences: ExcalidrawFrameElement[][] = [];
+    for (const list of bySequence.values()) {
+      list.sort((a, b) => a.y - b.y);
+      sequences.push(list);
+    }
+    sequences.sort((a, b) => (a[0]?.y ?? 0) - (b[0]?.y ?? 0));
+    return sequences.flat();
   }, [elements]);
   if (frames.length === 0 || !appState) {
     return (
