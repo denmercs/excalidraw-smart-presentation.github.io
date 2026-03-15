@@ -524,6 +524,7 @@
     "revealOrderPrev": "Previous step",
     "revealOrderNext": "Next step",
     "revealOrderNextLabel": "Next",
+    "revealOrderDeleteColumn": "Delete column",
     "total": "Total",
     "version": "Version",
     "versionCopy": "Click to copy",

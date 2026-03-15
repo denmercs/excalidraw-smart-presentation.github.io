@@ -2,6 +2,7 @@ import {
   getNonDeletedElements,
   getFrameChildren,
   newFrameElement,
+  newElementWith,
   getBoundTextElement,
   duplicateElement,
   mutateElement,
@@ -71,6 +72,31 @@ export const getOverviewFrame = (
     (f) => f.name?.trim().toLowerCase() === OVERVIEW_FRAME_NAME.toLowerCase(),
   );
   return overviews.length === 1 ? overviews[0] : null;
+};
+
+type FrameWithCustom = ExcalidrawFrameLikeElement & {
+  customData?: { generatedFromOverviewFrameId?: string };
+};
+
+/**
+ * Returns all frames in the same progressive-reveal sequence as the given frame.
+ * Sequence = same generatedFromOverviewFrameId, or the overview frame plus all frames generated from it.
+ * Used to allow "Delete column" only when the sequence has more than one frame (keep the last one).
+ */
+export const getProgressiveRevealSequenceFrames = (
+  elements: readonly ExcalidrawElement[],
+  frame: ExcalidrawFrameLikeElement,
+): ExcalidrawFrameLikeElement[] => {
+  const allFrames = getNonDeletedElements(elements).filter(
+    (e): e is ExcalidrawFrameLikeElement => isFrameLikeElement(e),
+  );
+  const key =
+    (frame as FrameWithCustom).customData?.generatedFromOverviewFrameId ??
+    frame.id;
+  return allFrames.filter((f) => {
+    const fKey = (f as FrameWithCustom).customData?.generatedFromOverviewFrameId ?? f.id;
+    return fKey === key;
+  });
 };
 
 export type GenerateProgressiveRevealOptions = {
@@ -351,6 +377,72 @@ export const actionSetRevealOrder = register({
     return {
       elements: nextElements,
       appState,
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    };
+  },
+});
+
+/**
+ * Delete all frames in the selected frame's progressive-reveal sequence except the last one.
+ * Also deletes all elements inside the removed frames (does not ungroup).
+ */
+export const actionDeleteProgressiveRevealColumn = register({
+  name: "deleteProgressiveRevealColumn",
+  label: "stats.revealOrderDeleteColumn",
+  trackEvent: { category: "element", action: "deleteProgressiveRevealColumn" },
+  predicate: (elements, appState, _, app) => {
+    if (!isSingleFrameSelected(appState, app)) return false;
+    const frame = app.scene.getSelectedElements(appState)[0];
+    if (!isFrameLikeElement(frame)) return false;
+    const sequence = getProgressiveRevealSequenceFrames(
+      getNonDeletedElements(elements),
+      frame,
+    );
+    return sequence.length > 1;
+  },
+  perform: (elements, appState, _value, app) => {
+    const frame = app.scene.getSelectedElements(appState)[0];
+    if (!frame || !isFrameLikeElement(frame)) {
+      return { elements, appState, captureUpdate: CaptureUpdateAction.EVENTUALLY };
+    }
+    const all = getNonDeletedElements(elements);
+    const sequence = getProgressiveRevealSequenceFrames(all, frame);
+    if (sequence.length <= 1) {
+      return { elements, appState, captureUpdate: CaptureUpdateAction.EVENTUALLY };
+    }
+    // Sort by x then y so "last" is well-defined (rightmost/bottom).
+    const sorted = [...sequence].sort((a, b) =>
+      a.x !== b.x ? a.x - b.x : a.y - b.y,
+    );
+    const framesToDelete = sorted.slice(0, -1);
+    const lastFrame = sorted[sorted.length - 1];
+
+    const idsToDelete = new Set<string>();
+    for (const f of framesToDelete) {
+      idsToDelete.add(f.id);
+      const children = getFrameChildren(all, f.id);
+      for (const el of children) {
+        idsToDelete.add(el.id);
+      }
+    }
+
+    const elementsArray =
+      Array.isArray(elements) ? elements : Array.from(elements);
+    const nextElements = elementsArray.map((el) =>
+      idsToDelete.has(el.id) ? newElementWith(el, { isDeleted: true }) : el,
+    );
+
+    app.setToast?.({
+      message: `Removed ${framesToDelete.length} frame${framesToDelete.length === 1 ? "" : "s"}.`,
+      duration: 2500,
+    });
+
+    return {
+      elements: nextElements,
+      appState: {
+        ...appState,
+        selectedElementIds: lastFrame ? { [lastFrame.id]: true } : {},
+      },
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     };
   },

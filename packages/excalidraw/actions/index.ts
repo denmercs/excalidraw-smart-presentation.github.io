@@ -101,6 +101,7 @@ export { actionToggleCropEditor } from "./actionCropEditor";
 export {
   actionCreateProgressiveReveal,
   actionSetRevealOrder,
+  actionDeleteProgressiveRevealColumn,
   generateProgressiveRevealFromFrame,
   getOverviewFrame,
   getOrderedRootElementsInFrame,

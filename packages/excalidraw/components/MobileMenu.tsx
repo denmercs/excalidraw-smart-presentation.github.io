@@ -188,6 +188,7 @@ export const MobileMenu = ({
                 elementsMap={app.scene.getNonDeletedElementsMap()}
                 renderAction={actionManager.renderAction}
                 app={app}
+                setAppState={setAppState}
               />
             </Section>
           ) : null}

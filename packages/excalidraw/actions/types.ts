@@ -145,6 +145,7 @@ export type ActionName =
   | "wrapSelectionInFrame"
   | "createProgressiveReveal"
   | "setRevealOrder"
+  | "deleteProgressiveRevealColumn"
   | "toggleLassoTool"
   | "toggleShapeSwitch"
   | "togglePolygon";

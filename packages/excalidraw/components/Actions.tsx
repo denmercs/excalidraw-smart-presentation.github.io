@@ -44,6 +44,7 @@ import { hasStrokeColor, toolIsArrow } from "@excalidraw/element";
 import type {
   ExcalidrawElement,
   ExcalidrawElementType,
+  ExcalidrawFrameLikeElement,
   NonDeletedElementsMap,
   NonDeletedSceneElementsMap
 } from "@excalidraw/element/types";
@@ -51,10 +52,14 @@ import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 
 import {
   getOrderedRootElementsInFrame,
+  getProgressiveRevealSequenceFrames,
   actionSetRevealOrder
 } from "../actions/actionProgressiveReveal";
 
-import { actionToggleZenMode } from "../actions";
+import {
+  actionDeleteProgressiveRevealColumn,
+  actionToggleZenMode
+} from "../actions";
 
 import { alignActionsPredicate } from "../actions/actionAlign";
 import { trackEvent } from "../analytics";
@@ -93,10 +98,17 @@ import {
   LassoIcon,
   gripVerticalIcon,
   playerPlayIcon,
-  CloseIcon
+  CloseIcon,
+  TrashIcon
 } from "./icons";
 
-import type { AppClassProperties, AppProps, UIAppState, Zoom } from "../types";
+import type {
+  AppClassProperties,
+  AppProps,
+  AppState,
+  UIAppState,
+  Zoom
+} from "../types";
 import type { ActionManager } from "../actions/manager";
 
 export const canChangeStrokeColor = (
@@ -280,14 +292,18 @@ const SortableRevealOrderItem = ({
 const RevealOrderBlock = ({
   roots,
   app,
-  elementsMap
+  elementsMap,
+  setAppState: setAppStateProp
 }: {
   roots: readonly NonDeletedExcalidrawElement[];
   app?: AppClassProperties;
   elementsMap?: Map<string, ExcalidrawElement>;
+  /** When provided (e.g. from LayerUI), avoids relying on context which can be uninitialized in isolated/subtrees */
+  setAppState?: React.Component<any, AppState>["setState"];
 }) => {
   const actionManager = useExcalidrawActionManager();
-  const setAppState = useExcalidrawSetAppState();
+  const setAppStateFromContext = useExcalidrawSetAppState();
+  const setAppState = setAppStateProp ?? setAppStateFromContext;
   const [order, setOrder] = useState<string[]>(() => roots.map((r) => r.id));
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -490,13 +506,17 @@ export const SelectedShapeActions = ({
   appState,
   elementsMap,
   renderAction,
-  app
+  app,
+  setAppState: setAppStateProp
 }: {
   appState: UIAppState;
   elementsMap: NonDeletedElementsMap | NonDeletedSceneElementsMap;
   renderAction: ActionManager["renderAction"];
   app: AppClassProperties;
+  /** When provided (e.g. from LayerUI), passed to RevealOrderBlock to avoid context issues in isolated trees */
+  setAppState?: React.Component<any, AppState>["setState"];
 }) => {
+  const actionManager = useExcalidrawActionManager();
   const targetElements = getTargetElements(elementsMap, appState);
 
   let isSingleElementBoundContainer = false;
@@ -547,6 +567,14 @@ export const SelectedShapeActions = ({
         elementsMap
       )
     : [];
+  const progressiveRevealSequenceFrames = singleFrameSelected
+    ? getProgressiveRevealSequenceFrames(
+        app.scene.getNonDeletedElements(),
+        targetElements[0] as ExcalidrawFrameLikeElement
+      )
+    : [];
+  const canDeleteProgressiveRevealColumn =
+    progressiveRevealSequenceFrames.length > 1;
 
   return (
     <div className="selected-shape-actions">
@@ -671,16 +699,38 @@ export const SelectedShapeActions = ({
           </div>
         </fieldset>
       )}
-      {singleFrameSelected && revealOrderRoots.length > 0 && (
-        <fieldset>
-          <legend>{t("stats.revealOrder")}</legend>
-          <RevealOrderBlock
-            roots={revealOrderRoots}
-            app={app}
-            elementsMap={elementsMap}
-          />
-        </fieldset>
-      )}
+      {singleFrameSelected &&
+        (revealOrderRoots.length > 0 || canDeleteProgressiveRevealColumn) && (
+          <fieldset>
+            <legend>{t("stats.revealOrder")}</legend>
+            {revealOrderRoots.length > 0 && (
+              <RevealOrderBlock
+                roots={revealOrderRoots}
+                app={app}
+                elementsMap={elementsMap}
+                setAppState={setAppStateProp}
+              />
+            )}
+            {canDeleteProgressiveRevealColumn && (
+              <div className="selected-shape-actions__reveal-order-delete-column">
+                <button
+                  type="button"
+                  className="selected-shape-actions__reveal-order-preview-btn"
+                  onClick={() =>
+                    actionManager.executeAction(
+                      actionDeleteProgressiveRevealColumn
+                    )
+                  }
+                  title={t("stats.revealOrderDeleteColumn")}
+                  aria-label={t("stats.revealOrderDeleteColumn")}
+                >
+                  {TrashIcon}
+                  <span>{t("stats.revealOrderDeleteColumn")}</span>
+                </button>
+              </div>
+            )}
+          </fieldset>
+        )}
     </div>
   );
 };

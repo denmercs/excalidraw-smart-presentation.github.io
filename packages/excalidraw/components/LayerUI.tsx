@@ -230,6 +230,7 @@ const LayerUI = ({
           elementsMap={app.scene.getNonDeletedElementsMap()}
           renderAction={actionManager.renderAction}
           app={app}
+          setAppState={setAppState}
         />
       </Island>
     </Section>

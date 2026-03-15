@@ -105,8 +105,8 @@
 
   &__reveal-order-preview {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     gap: 0.5rem;
     margin-bottom: 0.5rem;
   }
@@ -138,10 +138,6 @@
     }
   }
 
-  &__reveal-order-preview-done {
-    margin-left: auto;
-  }
-
   &__reveal-order-step {
     display: flex;
     flex-direction: column;
@@ -157,8 +153,13 @@
 
   &__reveal-order-preview-actions {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: stretch;
     gap: 2px;
+  }
+
+  &__reveal-order-delete-column {
+    margin-top: 0.5rem;
   }
 
   &__reveal-order-list {
