@@ -331,13 +331,15 @@ export function Presentation() {
       list.push(f);
       bySequence.set(key, list);
     }
-    // Sort frames within each sequence by y, then sort sequences by topmost y.
+    // Sort frames within each sequence by column (x) then row (y), so the
+    // slideshow advances per reveal column (1, 2, 3, 4 left-to-right).
+    // Sort sequences by leftmost x so multi-sequence order is stable.
     const sequences: ExcalidrawFrameElement[][] = [];
     for (const list of bySequence.values()) {
-      list.sort((a, b) => a.y - b.y);
+      list.sort((a, b) => (a.x !== b.x ? a.x - b.x : a.y - b.y));
       sequences.push(list);
     }
-    sequences.sort((a, b) => (a[0]?.y ?? 0) - (b[0]?.y ?? 0));
+    sequences.sort((a, b) => (a[0]?.x ?? 0) - (b[0]?.x ?? 0));
     return sequences.flat();
   }, [elements]);
   if (frames.length === 0 || !appState) {
