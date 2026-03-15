@@ -91,7 +91,9 @@ import {
   laserPointerToolIcon,
   MagicIcon,
   LassoIcon,
-  gripVerticalIcon
+  gripVerticalIcon,
+  playerPlayIcon,
+  CloseIcon
 } from "./icons";
 
 import type { AppClassProperties, AppProps, UIAppState, Zoom } from "../types";
@@ -289,6 +291,7 @@ const RevealOrderBlock = ({
   const [order, setOrder] = useState<string[]>(() => roots.map((r) => r.id));
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [previewStep, setPreviewStep] = useState<number>(-1);
   const prevRootIdSetRef = useRef<string>("");
 
   // Sync order from roots only when the set of elements in the frame changes
@@ -304,7 +307,24 @@ const RevealOrderBlock = ({
     }
   }, [roots]);
 
-  // Clear canvas highlight when this block unmounts (e.g. drawer closes).
+  const orderMap = new Map(order.map((id, i) => [id, i]));
+  const sortedRoots = [...roots].sort(
+    (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0)
+  );
+  const sortedRootsRef = useRef(sortedRoots);
+  sortedRootsRef.current = sortedRoots;
+
+  // Preview mode: highlight on canvas the elements revealed up to current step.
+  // Use ref for sortedRoots so we don't retrigger on every render (sortedRoots is a new array each time).
+  useEffect(() => {
+    if (previewStep < 0) {
+      return;
+    }
+    const toHighlight = sortedRootsRef.current.slice(0, previewStep + 1);
+    setAppState((prev) => ({ ...prev, elementsToHighlight: toHighlight }));
+  }, [previewStep, setAppState]);
+
+  // Clear canvas highlight when this block unmounts or preview exits.
   useEffect(() => {
     return () => {
       setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
@@ -314,21 +334,17 @@ const RevealOrderBlock = ({
 
   const handleMouseEnter = (el: NonDeletedExcalidrawElement) => {
     setHighlightedId(el.id);
-    setAppState((prev) => ({
-      ...prev,
-      elementsToHighlight: [el]
-    }));
+    if (previewStep < 0) {
+      setAppState((prev) => ({ ...prev, elementsToHighlight: [el] }));
+    }
   };
 
   const handleMouseLeave = () => {
     setHighlightedId(null);
-    setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
+    if (previewStep < 0) {
+      setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
+    }
   };
-
-  const orderMap = new Map(order.map((id, i) => [id, i]));
-  const sortedRoots = [...roots].sort(
-    (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0)
-  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -354,11 +370,95 @@ const RevealOrderBlock = ({
     });
   };
 
+  const startPreview = () => {
+    setPreviewStep(0);
+  };
+  const exitPreview = () => {
+    setPreviewStep(-1);
+    setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
+  };
+  const previewPrev = () => {
+    setPreviewStep((s) => (s <= 0 ? 0 : s - 1));
+  };
+  const previewNext = () => {
+    setPreviewStep((s) =>
+      s >= sortedRoots.length - 1 ? sortedRoots.length - 1 : s + 1
+    );
+  };
+  const nextLabel =
+    previewStep >= 0 && previewStep < sortedRoots.length - 1
+      ? getRevealOrderLabel(
+          sortedRoots[previewStep + 1],
+          previewStep + 1,
+          elementsMap
+        )
+      : null;
+
   return (
     <div className="selected-shape-actions__reveal-order">
       <p className="selected-shape-actions__reveal-order-hint">
         {t("stats.revealOrderHint")}
       </p>
+      <div className="selected-shape-actions__reveal-order-preview">
+        {previewStep < 0 ? (
+          <button
+            type="button"
+            className="selected-shape-actions__reveal-order-preview-btn"
+            onClick={startPreview}
+            title={t("stats.revealOrderPreview")}
+            aria-label={t("stats.revealOrderPreview")}
+          >
+            {playerPlayIcon}
+            <span>{t("stats.revealOrderPreview")}</span>
+          </button>
+        ) : (
+          <>
+            <span className="selected-shape-actions__reveal-order-step">
+              {t("stats.revealOrderStep", {
+                current: previewStep + 1,
+                total: sortedRoots.length
+              })}
+              {nextLabel != null && (
+                <span className="selected-shape-actions__reveal-order-next">
+                  {t("stats.revealOrderNextLabel")}: {nextLabel}
+                </span>
+              )}
+            </span>
+            <div className="selected-shape-actions__reveal-order-preview-actions">
+              <button
+                type="button"
+                className="selected-shape-actions__reveal-order-preview-btn"
+                onClick={previewPrev}
+                disabled={previewStep === 0}
+                title={t("stats.revealOrderPrev")}
+                aria-label={t("stats.revealOrderPrev")}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className="selected-shape-actions__reveal-order-preview-btn"
+                onClick={previewNext}
+                disabled={previewStep === sortedRoots.length - 1}
+                title={t("stats.revealOrderNext")}
+                aria-label={t("stats.revealOrderNext")}
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                className="selected-shape-actions__reveal-order-preview-btn selected-shape-actions__reveal-order-preview-done"
+                onClick={exitPreview}
+                title={t("stats.revealOrderPreviewDone")}
+                aria-label={t("stats.revealOrderPreviewDone")}
+              >
+                {CloseIcon}
+                <span>{t("stats.revealOrderPreviewDone")}</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
       <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
         <SortableContext
           items={order}
