@@ -56,6 +56,23 @@ https://github.com/user-attachments/assets/05e9a464-6e82-492b-9961-af0500822534
 
 https://github.com/user-attachments/assets/6f5cc273-15b3-4c63-aa4c-2b67f6051e03
 
+### Progressive reveal (one element per slide)
+
+You can build slides where each frame adds one more element to the previous frame:
+
+1. **Frame 1:** One shape (e.g. a circle).
+2. **Frame 2:** The same shape + a second element (e.g. circle + arrow).
+3. **Frame 3:** Same shape + second element + a third (e.g. circle + arrow + circle).
+4. And so on.
+
+**How to do it:**
+
+- Create one frame per step and place elements inside each frame (drag elements into the frame or use **Duplicate into next frame** `Ctrl + Shift + D`).
+- For elements that should **persist and animate** from the previous slide, give them the **same name** in **Canvas & Shape Properties** (e.g. `circle1` in frame 1, and again `circle1` in frame 2 and 3). Each new element gets its own name (e.g. `arrow1`, `circle2`).
+- Frames are ordered by their **y position** (top to bottom = first slide to last).
+
+**Example:** [`presentation-docs/ProgressiveRevealExample.excalidraw`](./presentation-docs/ProgressiveRevealExample.excalidraw) — slide 1: circle only; slide 2: circle + arrow; slide 3: circle + arrow + second circle. Open it and click **Present** to see the progressive reveal.
+
 ## Current Limitations
 
 - Animation duration (300 ms) and type (linear) are not customizable.

@@ -1,24 +1,25 @@
 import clsx from "clsx";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 import {
   CLASSES,
   KEYS,
   capitalizeString,
-  isTransparent,
+  isTransparent
 } from "@excalidraw/common";
 
 import {
   shouldAllowVerticalAlign,
-  suppportsHorizontalAlign,
+  suppportsHorizontalAlign
 } from "@excalidraw/element";
 
 import {
   hasBoundTextElement,
   isElbowArrow,
+  isFrameLikeElement,
   isImageElement,
   isLinearElement,
-  isTextElement,
+  isTextElement
 } from "@excalidraw/element";
 
 import { hasStrokeColor, toolIsArrow } from "@excalidraw/element";
@@ -27,8 +28,14 @@ import type {
   ExcalidrawElement,
   ExcalidrawElementType,
   NonDeletedElementsMap,
-  NonDeletedSceneElementsMap,
+  NonDeletedSceneElementsMap
 } from "@excalidraw/element/types";
+import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
+
+import {
+  getOrderedRootElementsInFrame,
+  actionSetRevealOrder
+} from "../actions/actionProgressiveReveal";
 
 import { actionToggleZenMode } from "../actions";
 
@@ -43,14 +50,18 @@ import {
   getTargetElements,
   hasBackground,
   hasStrokeStyle,
-  hasStrokeWidth,
+  hasStrokeWidth
 } from "../scene";
 
 import { SHAPES } from "./shapes";
 
 import "./Actions.scss";
 
-import { useDevice } from "./App";
+import {
+  useDevice,
+  useExcalidrawActionManager,
+  useExcalidrawSetAppState
+} from "./App";
 import Stack from "./Stack";
 import { ToolButton } from "./ToolButton";
 import { Tooltip } from "./Tooltip";
@@ -63,6 +74,8 @@ import {
   laserPointerToolIcon,
   MagicIcon,
   LassoIcon,
+  collapseUpIcon,
+  collapseDownIcon
 } from "./icons";
 
 import type { AppClassProperties, AppProps, UIAppState, Zoom } from "../types";
@@ -70,7 +83,7 @@ import type { ActionManager } from "../actions/manager";
 
 export const canChangeStrokeColor = (
   appState: UIAppState,
-  targetElements: ExcalidrawElement[],
+  targetElements: ExcalidrawElement[]
 ) => {
   let commonSelectedType: ExcalidrawElementType | null =
     targetElements[0]?.type || null;
@@ -93,7 +106,7 @@ export const canChangeStrokeColor = (
 
 export const canChangeBackgroundColor = (
   appState: UIAppState,
-  targetElements: ExcalidrawElement[],
+  targetElements: ExcalidrawElement[]
 ) => {
   return (
     hasBackground(appState.activeTool.type) ||
@@ -101,11 +114,128 @@ export const canChangeBackgroundColor = (
   );
 };
 
+const RevealOrderBlock = ({
+  roots
+}: {
+  roots: readonly NonDeletedExcalidrawElement[];
+}) => {
+  const actionManager = useExcalidrawActionManager();
+  const setAppState = useExcalidrawSetAppState();
+  const [order, setOrder] = useState<string[]>(() => roots.map((r) => r.id));
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const prevRootIdSetRef = useRef<string>("");
+
+  // Sync order from roots only when the set of elements in the frame changes
+  // (not on every re-render), so hover highlight doesn’t reset user reordering.
+  useEffect(() => {
+    const rootIdSet = roots
+      .map((r) => r.id)
+      .sort()
+      .join(",");
+    if (prevRootIdSetRef.current !== rootIdSet) {
+      prevRootIdSetRef.current = rootIdSet;
+      setOrder(roots.map((r) => r.id));
+    }
+  }, [roots]);
+
+  // Clear canvas highlight when this block unmounts (e.g. drawer closes).
+  useEffect(() => {
+    return () => {
+      setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
+  }, []);
+
+  const handleMouseEnter = (el: NonDeletedExcalidrawElement) => {
+    setHighlightedId(el.id);
+    setAppState((prev) => ({
+      ...prev,
+      elementsToHighlight: [el]
+    }));
+  };
+
+  const handleMouseLeave = () => {
+    setHighlightedId(null);
+    setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
+  };
+
+  const move = (index: number, delta: number) => {
+    const next = [...order];
+    const j = index + delta;
+    if (j < 0 || j >= next.length) return;
+    [next[index], next[j]] = [next[j], next[index]];
+    setOrder(next);
+  };
+
+  const applyOrder = () => {
+    actionManager.executeAction(actionSetRevealOrder, "api", order);
+  };
+
+  const orderMap = new Map(order.map((id, i) => [id, i]));
+  const sortedRoots = [...roots].sort(
+    (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0)
+  );
+
+  return (
+    <div className="selected-shape-actions__reveal-order">
+      <p className="selected-shape-actions__reveal-order-hint">
+        {t("stats.revealOrderHint")}
+      </p>
+      <ul className="selected-shape-actions__reveal-order-list">
+        {sortedRoots.map((el, index) => (
+          <li
+            key={el.id}
+            className={clsx("selected-shape-actions__reveal-order-item", {
+              "selected-shape-actions__reveal-order-item--highlighted":
+                highlightedId === el.id
+            })}
+            onMouseEnter={() => handleMouseEnter(el)}
+            onMouseLeave={handleMouseLeave}
+          >
+            <span className="selected-shape-actions__reveal-order-label">
+              {t(`element.${el.type}`)}
+            </span>
+            <div className="selected-shape-actions__reveal-order-actions">
+              <button
+                type="button"
+                className="selected-shape-actions__reveal-order-btn"
+                onClick={() => move(order.indexOf(el.id), -1)}
+                disabled={index === 0}
+                title={t("stats.revealOrder")}
+                aria-label={t("stats.revealOrder")}
+              >
+                {collapseUpIcon}
+              </button>
+              <button
+                type="button"
+                className="selected-shape-actions__reveal-order-btn"
+                onClick={() => move(order.indexOf(el.id), 1)}
+                disabled={index === sortedRoots.length - 1}
+                title={t("stats.revealOrder")}
+                aria-label={t("stats.revealOrder")}
+              >
+                {collapseDownIcon}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="selected-shape-actions__reveal-order-apply"
+        onClick={applyOrder}
+      >
+        {t("stats.revealOrderApply")}
+      </button>
+    </div>
+  );
+};
+
 export const SelectedShapeActions = ({
   appState,
   elementsMap,
   renderAction,
-  app,
+  app
 }: {
   appState: UIAppState;
   elementsMap: NonDeletedElementsMap | NonDeletedSceneElementsMap;
@@ -123,7 +253,7 @@ export const SelectedShapeActions = ({
     isSingleElementBoundContainer = true;
   }
   const isEditingTextOrNewElement = Boolean(
-    appState.editingTextElement || appState.newElement,
+    appState.editingTextElement || appState.newElement
   );
   const device = useDevice();
   const isRTL = document.documentElement.getAttribute("dir") === "rtl";
@@ -133,7 +263,7 @@ export const SelectedShapeActions = ({
       !isTransparent(appState.currentItemBackgroundColor)) ||
     targetElements.some(
       (element) =>
-        hasBackground(element.type) && !isTransparent(element.backgroundColor),
+        hasBackground(element.type) && !isTransparent(element.backgroundColor)
     );
 
   const showLinkIcon =
@@ -152,6 +282,16 @@ export const SelectedShapeActions = ({
 
   const showAlignActions =
     !isSingleElementBoundContainer && alignActionsPredicate(appState, app);
+
+  const singleFrameSelected =
+    targetElements.length === 1 && isFrameLikeElement(targetElements[0]);
+  const revealOrderRoots = singleFrameSelected
+    ? getOrderedRootElementsInFrame(
+        app.scene.getNonDeletedElements(),
+        targetElements[0].id,
+        elementsMap
+      )
+    : [];
 
   return (
     <div className="selected-shape-actions">
@@ -250,7 +390,7 @@ export const SelectedShapeActions = ({
                 display: "flex",
                 flexWrap: "wrap",
                 gap: ".5rem",
-                marginTop: "-0.5rem",
+                marginTop: "-0.5rem"
               }}
             >
               {renderAction("alignTop")}
@@ -276,6 +416,12 @@ export const SelectedShapeActions = ({
           </div>
         </fieldset>
       )}
+      {singleFrameSelected && revealOrderRoots.length > 0 && (
+        <fieldset>
+          <legend>{t("stats.revealOrder")}</legend>
+          <RevealOrderBlock roots={revealOrderRoots} />
+        </fieldset>
+      )}
     </div>
   );
 };
@@ -284,7 +430,7 @@ export const ShapesSwitcher = ({
   activeTool,
   appState,
   app,
-  UIOptions,
+  UIOptions
 }: {
   activeTool: UIAppState["activeTool"];
   appState: UIAppState;
@@ -351,7 +497,7 @@ export const ShapesSwitcher = ({
               }
               if (value === "image") {
                 app.setActiveTool({
-                  type: value,
+                  type: value
                 });
               } else {
                 app.setActiveTool({ type: value });
@@ -372,7 +518,7 @@ export const ShapesSwitcher = ({
               // in collab we're already highlighting the laser button
               // outside toolbar, so let's not highlight extra-tools button
               // on top of it
-              (laserToolSelected && !app.props.isCollaborating),
+              (laserToolSelected && !app.props.isCollaborating)
           })}
           onToggle={() => setIsExtraToolsMenuOpen(!isExtraToolsMenuOpen)}
           title={t("toolBar.extraTools")}
@@ -457,7 +603,7 @@ export const ShapesSwitcher = ({
 
 export const ZoomActions = ({
   renderAction,
-  zoom,
+  zoom
 }: {
   renderAction: ActionManager["renderAction"];
   zoom: Zoom;
@@ -473,7 +619,7 @@ export const ZoomActions = ({
 
 export const UndoRedoActions = ({
   renderAction,
-  className,
+  className
 }: {
   renderAction: ActionManager["renderAction"];
   className?: string;
@@ -490,7 +636,7 @@ export const UndoRedoActions = ({
 
 export const ExitZenModeAction = ({
   actionManager,
-  showExitZenModeBtn,
+  showExitZenModeBtn
 }: {
   actionManager: ActionManager;
   showExitZenModeBtn: boolean;
@@ -498,7 +644,7 @@ export const ExitZenModeAction = ({
   <button
     type="button"
     className={clsx("disable-zen-mode", {
-      "disable-zen-mode--visible": showExitZenModeBtn,
+      "disable-zen-mode--visible": showExitZenModeBtn
     })}
     onClick={() => actionManager.executeAction(actionToggleZenMode)}
   >
@@ -508,7 +654,7 @@ export const ExitZenModeAction = ({
 
 export const FinalizeAction = ({
   renderAction,
-  className,
+  className
 }: {
   renderAction: ActionManager["renderAction"];
   className?: string;

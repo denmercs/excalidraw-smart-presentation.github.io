@@ -143,6 +143,8 @@ export type ActionName =
   | "linkToElement"
   | "cropEditor"
   | "wrapSelectionInFrame"
+  | "createProgressiveReveal"
+  | "setRevealOrder"
   | "toggleLassoTool"
   | "toggleShapeSwitch"
   | "togglePolygon";

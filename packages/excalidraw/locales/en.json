@@ -172,6 +172,8 @@
     "copyElementLink": "Copy link to object",
     "linkToElement": "Link to object",
     "wrapSelectionInFrame": "Wrap selection in frame",
+    "createProgressiveReveal": "Create progressive reveal",
+    "setRevealOrder": "Set reveal order",
     "tab": "Tab",
     "shapeSwitch": "Switch shape"
   },
@@ -510,6 +512,9 @@
     "title": "Properties",
     "generalStats": "General",
     "elementProperties": "Shape properties",
+    "revealOrder": "Reveal order",
+    "revealOrderApply": "Apply order",
+    "revealOrderHint": "Order of elements in progressive reveal (first = slide 1).",
     "total": "Total",
     "version": "Version",
     "versionCopy": "Click to copy",

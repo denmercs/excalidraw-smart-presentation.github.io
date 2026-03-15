@@ -731,6 +731,7 @@ export type AppClassProperties = {
   getEditorUIOffsets: App["getEditorUIOffsets"];
   visibleElements: App["visibleElements"];
   excalidrawContainerValue: App["excalidrawContainerValue"];
+  setToast: App["setToast"];
 
   onPointerUpEmitter: App["onPointerUpEmitter"];
   updateEditorAtom: App["updateEditorAtom"];

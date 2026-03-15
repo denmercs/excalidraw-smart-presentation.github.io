@@ -432,6 +432,7 @@ export const StatsInner = memo(
               </Collapsible>
             </div>
           )}
+
         </Island>
       </div>
     );
