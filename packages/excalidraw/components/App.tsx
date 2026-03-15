@@ -1557,7 +1557,7 @@ class App extends React.Component<AppProps, AppState> {
           ["--ui-pointerEvents" as any]: shouldBlockPointerEvents
             ? POINTER_EVENTS.disabled
             : POINTER_EVENTS.enabled,
-          ["--right-sidebar-width" as any]: "302px",
+          ["--right-sidebar-width" as any]: "360px",
         }}
         ref={this.excalidrawContainerRef}
         onDrop={this.handleAppOnDrop}

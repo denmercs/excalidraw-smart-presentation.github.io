@@ -296,13 +296,20 @@ export const actionSetRevealOrder = register({
     const all = getNonDeletedElements(elements);
     const elementsMap = arrayToMap(all);
     const defaultRoots = getOrderedRootElementsInFrame(all, frame.id, elementsMap);
-    // Optional custom order: value is array of element ids in desired reveal order
-    const orderedIds =
-      Array.isArray(value) &&
-      value.length > 0 &&
-      typeof value[0] === "string"
+    // Optional custom order: value is array of ids, or { order: string[], silent?: boolean }
+    const valueOrder =
+      Array.isArray(value) && value.length > 0 && typeof value[0] === "string"
         ? (value as string[])
+        : typeof value === "object" &&
+            value !== null &&
+            Array.isArray((value as { order?: string[] }).order)
+        ? (value as { order: string[] }).order
         : null;
+    const silent =
+      typeof value === "object" &&
+      value !== null &&
+      (value as { silent?: boolean }).silent === true;
+    const orderedIds = valueOrder;
     const roots: ExcalidrawElement[] =
       orderedIds !== null
         ? (orderedIds
@@ -334,10 +341,12 @@ export const actionSetRevealOrder = register({
       );
     });
 
-    app.setToast?.({
-      message: `Reveal order set for ${roots.length} element${roots.length === 1 ? "" : "s"}.`,
-      duration: 2500,
-    });
+    if (!silent) {
+      app.setToast?.({
+        message: `Reveal order set for ${roots.length} element${roots.length === 1 ? "" : "s"}.`,
+        duration: 2500,
+      });
+    }
 
     return {
       elements: nextElements,

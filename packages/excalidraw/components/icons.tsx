@@ -2249,6 +2249,19 @@ export const collapseUpIcon = createIcon(
   tablerIconProps,
 );
 
+export const gripVerticalIcon = createIcon(
+  <g>
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <circle cx={9} cy={6} r={1} fill="currentColor" />
+    <circle cx={9} cy={12} r={1} fill="currentColor" />
+    <circle cx={9} cy={18} r={1} fill="currentColor" />
+    <circle cx={15} cy={6} r={1} fill="currentColor" />
+    <circle cx={15} cy={12} r={1} fill="currentColor" />
+    <circle cx={15} cy={18} r={1} fill="currentColor" />
+  </g>,
+  { width: 24, height: 24 },
+);
+
 export const upIcon = createIcon(
   <g>
     <path stroke="none" d="M0 0h24v24H0z" fill="none" />

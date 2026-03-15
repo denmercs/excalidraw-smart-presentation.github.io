@@ -1,5 +1,21 @@
 import clsx from "clsx";
 import { useState, useEffect, useRef } from "react";
+import type { CSSProperties } from "react";
+
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import {
   CLASSES,
@@ -14,6 +30,7 @@ import {
 } from "@excalidraw/element";
 
 import {
+  getBoundTextElement,
   hasBoundTextElement,
   isElbowArrow,
   isFrameLikeElement,
@@ -74,8 +91,7 @@ import {
   laserPointerToolIcon,
   MagicIcon,
   LassoIcon,
-  collapseUpIcon,
-  collapseDownIcon
+  gripVerticalIcon
 } from "./icons";
 
 import type { AppClassProperties, AppProps, UIAppState, Zoom } from "../types";
@@ -114,15 +130,165 @@ export const canChangeBackgroundColor = (
   );
 };
 
+const MAX_LABEL_WORDS = 3;
+
+const getElementContentPreview = (
+  el: NonDeletedExcalidrawElement,
+  elementsMap: Map<string, ExcalidrawElement> | undefined
+): string | null => {
+  let text: string | null = null;
+  if (el.type === "text" && "text" in el) {
+    text = (el as { text: string }).text;
+  } else if (elementsMap) {
+    const bound = getBoundTextElement(el, elementsMap);
+    if (bound && "text" in bound) {
+      text = (bound as { text: string }).text;
+    }
+  }
+  if (text == null || !String(text).trim()) {
+    return null;
+  }
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) {
+    return null;
+  }
+  const firstThree = words.slice(0, MAX_LABEL_WORDS).join(" ");
+  return words.length > MAX_LABEL_WORDS ? `${firstThree}…` : firstThree;
+};
+
+const getRevealOrderLabel = (
+  el: NonDeletedExcalidrawElement,
+  index: number,
+  elementsMap: Map<string, ExcalidrawElement> | undefined
+): string => {
+  const contentPreview = getElementContentPreview(el, elementsMap);
+  if (contentPreview) {
+    return contentPreview;
+  }
+  const name = (
+    el as NonDeletedExcalidrawElement & {
+      customData?: { name?: string };
+    }
+  ).customData?.name;
+  if (name != null && String(name).trim()) {
+    return String(name).trim();
+  }
+  return `${t(`element.${el.type}`)} ${index + 1}`;
+};
+
+type SortableRevealOrderItemProps = {
+  el: NonDeletedExcalidrawElement;
+  index: number;
+  elementsMap: Map<string, ExcalidrawElement> | undefined;
+  highlightedId: string | null;
+  editingId: string | null;
+  app: AppClassProperties | undefined;
+  onMouseEnter: (el: NonDeletedExcalidrawElement) => void;
+  onMouseLeave: () => void;
+  setEditingId: (id: string | null) => void;
+};
+
+const SortableRevealOrderItem = ({
+  el,
+  index,
+  elementsMap,
+  highlightedId,
+  editingId,
+  app,
+  onMouseEnter,
+  onMouseLeave,
+  setEditingId
+}: SortableRevealOrderItemProps) => {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: el.id });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition
+  };
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={clsx("selected-shape-actions__reveal-order-item", {
+        "selected-shape-actions__reveal-order-item--highlighted":
+          highlightedId === el.id,
+        "selected-shape-actions__reveal-order-item--dragging": isDragging
+      })}
+      onMouseEnter={() => onMouseEnter(el)}
+      onMouseLeave={onMouseLeave}
+    >
+      <button
+        type="button"
+        className="selected-shape-actions__reveal-order-drag-handle"
+        aria-label={t("stats.revealOrder")}
+        {...attributes}
+        {...listeners}
+      >
+        {gripVerticalIcon}
+      </button>
+      {editingId === el.id && app ? (
+        <input
+          type="text"
+          className="selected-shape-actions__reveal-order-input"
+          defaultValue={getRevealOrderLabel(el, index, elementsMap)}
+          autoFocus
+          onBlur={(e) => {
+            const value = e.currentTarget.value.trim();
+            app.scene.mutateElement(el, {
+              customData: {
+                ...(el as NonDeletedExcalidrawElement & {
+                  customData?: Record<string, unknown>;
+                }).customData,
+                name: value || undefined
+              }
+            });
+            setEditingId(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.currentTarget.blur();
+            }
+            if (e.key === "Escape") {
+              setEditingId(null);
+            }
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          className="selected-shape-actions__reveal-order-label-btn"
+          onClick={() => app && setEditingId(el.id)}
+          title={t("stats.revealOrderRenameHint")}
+        >
+          {getRevealOrderLabel(el, index, elementsMap)}
+        </button>
+      )}
+    </li>
+  );
+};
+
 const RevealOrderBlock = ({
-  roots
+  roots,
+  app,
+  elementsMap
 }: {
   roots: readonly NonDeletedExcalidrawElement[];
+  app?: AppClassProperties;
+  elementsMap?: Map<string, ExcalidrawElement>;
 }) => {
   const actionManager = useExcalidrawActionManager();
   const setAppState = useExcalidrawSetAppState();
   const [order, setOrder] = useState<string[]>(() => roots.map((r) => r.id));
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const prevRootIdSetRef = useRef<string>("");
 
   // Sync order from roots only when the set of elements in the frame changes
@@ -159,74 +325,63 @@ const RevealOrderBlock = ({
     setAppState((prev) => ({ ...prev, elementsToHighlight: null }));
   };
 
-  const move = (index: number, delta: number) => {
-    const next = [...order];
-    const j = index + delta;
-    if (j < 0 || j >= next.length) return;
-    [next[index], next[j]] = [next[j], next[index]];
-    setOrder(next);
-  };
-
-  const applyOrder = () => {
-    actionManager.executeAction(actionSetRevealOrder, "api", order);
-  };
-
   const orderMap = new Map(order.map((id, i) => [id, i]));
   const sortedRoots = [...roots].sort(
     (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0)
   );
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 5 }
+    })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over == null || active.id === over.id) {
+      return;
+    }
+    const oldIndex = order.indexOf(active.id as string);
+    const newIndex = order.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) {
+      return;
+    }
+    const newOrder = arrayMove(order, oldIndex, newIndex);
+    setOrder(newOrder);
+    actionManager.executeAction(actionSetRevealOrder, "api", {
+      order: newOrder,
+      silent: true
+    });
+  };
 
   return (
     <div className="selected-shape-actions__reveal-order">
       <p className="selected-shape-actions__reveal-order-hint">
         {t("stats.revealOrderHint")}
       </p>
-      <ul className="selected-shape-actions__reveal-order-list">
-        {sortedRoots.map((el, index) => (
-          <li
-            key={el.id}
-            className={clsx("selected-shape-actions__reveal-order-item", {
-              "selected-shape-actions__reveal-order-item--highlighted":
-                highlightedId === el.id
-            })}
-            onMouseEnter={() => handleMouseEnter(el)}
-            onMouseLeave={handleMouseLeave}
-          >
-            <span className="selected-shape-actions__reveal-order-label">
-              {t(`element.${el.type}`)}
-            </span>
-            <div className="selected-shape-actions__reveal-order-actions">
-              <button
-                type="button"
-                className="selected-shape-actions__reveal-order-btn"
-                onClick={() => move(order.indexOf(el.id), -1)}
-                disabled={index === 0}
-                title={t("stats.revealOrder")}
-                aria-label={t("stats.revealOrder")}
-              >
-                {collapseUpIcon}
-              </button>
-              <button
-                type="button"
-                className="selected-shape-actions__reveal-order-btn"
-                onClick={() => move(order.indexOf(el.id), 1)}
-                disabled={index === sortedRoots.length - 1}
-                title={t("stats.revealOrder")}
-                aria-label={t("stats.revealOrder")}
-              >
-                {collapseDownIcon}
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <button
-        type="button"
-        className="selected-shape-actions__reveal-order-apply"
-        onClick={applyOrder}
-      >
-        {t("stats.revealOrderApply")}
-      </button>
+      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+        <SortableContext
+          items={order}
+          strategy={verticalListSortingStrategy}
+        >
+          <ul className="selected-shape-actions__reveal-order-list">
+            {sortedRoots.map((el, index) => (
+              <SortableRevealOrderItem
+                key={el.id}
+                el={el}
+                index={index}
+                elementsMap={elementsMap}
+                highlightedId={highlightedId}
+                editingId={editingId}
+                app={app}
+                onMouseEnter={handleMouseEnter}
+                onMouseLeave={handleMouseLeave}
+                setEditingId={setEditingId}
+              />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
     </div>
   );
 };
@@ -419,7 +574,11 @@ export const SelectedShapeActions = ({
       {singleFrameSelected && revealOrderRoots.length > 0 && (
         <fieldset>
           <legend>{t("stats.revealOrder")}</legend>
-          <RevealOrderBlock roots={revealOrderRoots} />
+          <RevealOrderBlock
+            roots={revealOrderRoots}
+            app={app}
+            elementsMap={elementsMap}
+          />
         </fieldset>
       )}
     </div>
