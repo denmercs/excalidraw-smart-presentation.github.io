@@ -182,19 +182,26 @@ const progressAnimation = (
   return intermediate;
 };
 
+/** Non-null while a frame transition is in progress (used to block navigation). */
 export let animationStartTime: number | null = null;
 const ANIMATION_DURATION_MS = 300;
 
+/**
+ * Interpolates between two element maps over ANIMATION_DURATION_MS.
+ * Uses performance.now() for elapsed time so progress reaches 1 even when rAF is
+ * throttled while the document is in the background.
+ */
 export const animate = (
-  timestamp: number,
   excalidrawAPI: ExcalidrawImperativeAPI,
   oldElements: Map<string, ExcalidrawElement>,
   newElements: Map<string, ExcalidrawElement>,
+  wallStartMs?: number,
 ) => {
-  if (!animationStartTime) {
-    animationStartTime = timestamp;
+  const wallStart = wallStartMs ?? performance.now();
+  if (animationStartTime === null) {
+    animationStartTime = wallStart;
   }
-  const elapsed = timestamp - animationStartTime;
+  const elapsed = performance.now() - wallStart;
   const progress = Math.min(elapsed / ANIMATION_DURATION_MS, 1);
 
   const names = new Set([...oldElements.keys(), ...newElements.keys()]);
@@ -212,11 +219,10 @@ export const animate = (
   excalidrawAPI.updateScene({ elements: intermediateElements });
 
   if (progress < 1) {
-    requestAnimationFrame((ts) =>
-      animate(ts, excalidrawAPI, oldElements, newElements),
+    requestAnimationFrame(() =>
+      animate(excalidrawAPI, oldElements, newElements, wallStart),
     );
   } else {
-    // Reset for the next animation
     animationStartTime = null;
   }
 };

@@ -111,8 +111,8 @@ export function PresentationScene(props: {
       const newElementsMap = buildElementMap(newFrameElements);
 
       setFrameIndex(newFrameIndex);
-      requestAnimationFrame((timestamp) =>
-        animate(timestamp, excalidrawAPI, oldElementsMap, newElementsMap),
+      requestAnimationFrame(() =>
+        animate(excalidrawAPI, oldElementsMap, newElementsMap),
       );
     },
     [elements, excalidrawAPI, frameIndex, frames],
