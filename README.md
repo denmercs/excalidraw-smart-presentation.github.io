@@ -31,11 +31,25 @@ https://github.com/user-attachments/assets/62033fca-03ca-489f-aeeb-5d51331deac9
 
 https://github.com/user-attachments/assets/7920f88c-01c0-4b3f-8620-13bd5ae86d03
 
+### Presenting shortcuts
+
+| Keys | Action |
+| --- | --- |
+| `→` `↓` `Space` `Page Down` | Next slide |
+| `←` `↑` `Page Up` | Previous slide |
+| `G` | Open the slide switcher (thumbnail grid) |
+| digits then `Enter` | Jump straight to that slide number |
+| `Home` / `End` | First / last slide |
+| `Esc` | Close the switcher, or discard a half-typed slide number |
+
+The slide counter in the bottom-right corner shows the current slide number and opens the switcher when clicked. Inside the switcher, arrow keys move the selection and `Enter` jumps to it.
+
 ## Tips & Tricks
 
 - **Start from a Specific Slide:**
 
   - Select a frame, then click **"Present"**.
+  - Or, while presenting, press `G` and pick the slide — handy for jumping back when a talk goes off script.
 
 - **Maintain a 16:9 Aspect Ratio or any exact size:**
 

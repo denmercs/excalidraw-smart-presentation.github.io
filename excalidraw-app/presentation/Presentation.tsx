@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Excalidraw } from "@excalidraw/excalidraw";
 import {
   animate,
-  animationStartTime,
+  settleTransition,
 } from "excalidraw-app/presentation/animation";
-import { KEYS, supportsResizeObserver } from "@excalidraw/common";
+import { EVENT, KEYS, supportsResizeObserver } from "@excalidraw/common";
 import { isInitializedImageElement } from "@excalidraw/element/typeChecks";
 
 import type {
   AppState,
+  BinaryFiles,
   ExcalidrawImperativeAPI,
   NormalizedZoomValue,
 } from "@excalidraw/excalidraw/types";
@@ -21,9 +22,16 @@ import type {
 import { LocalData } from "../data/LocalData";
 import { updateStaleImageStatuses } from "../data/FileManager";
 
+import { SlideSwitcher } from "./SlideSwitcher";
+
 import "./Presentation.scss";
 
 const RE_PRESENTATION_LINK = /^#presentation=(\d+)$/;
+
+/** Must match the column count of `.presentation-switcher-grid`. */
+const SWITCHER_COLUMNS = 4;
+/** How long a partially typed slide number stays pending before it's discarded. */
+const PENDING_JUMP_TIMEOUT_MS = 3_000;
 
 export const isPresentationLink = (link: string) => {
   const hash = new URL(link).hash;
@@ -77,6 +85,20 @@ const buildElementMap = (
   return map;
 };
 
+/**
+ * State paired with a ref holding the same value, so that long-lived event
+ * handlers can read the current value without being re-registered.
+ */
+const useRefState = <T,>(initial: T) => {
+  const [value, setValue] = useState(initial);
+  const ref = useRef(value);
+  const set = useCallback((next: T) => {
+    ref.current = next;
+    setValue(next);
+  }, []);
+  return [value, set, ref] as const;
+};
+
 export function PresentationScene(props: {
   elements: ExcalidrawElement[];
   appState: Readonly<AppState>;
@@ -85,37 +107,47 @@ export function PresentationScene(props: {
 }) {
   const { appState, elements, frames, initialFrameIndex = 0 } = props;
   const [loadedInitialFrame, setLoadedInitialFrame] = useState(false);
-  const [frameIndex, setFrameIndex] = useState(initialFrameIndex);
+  const [frameIndex, setFrameIndex, frameIndexRef] =
+    useRefState(initialFrameIndex);
 
   const [excalidrawAPI, setExcalidrawAPI] =
     useState<ExcalidrawImperativeAPI | null>(null);
 
-  const renderFrame = useCallback(
-    (newFrameIndex: number) => {
-      if (!excalidrawAPI) {
+  const showFrame = useCallback(
+    (from: number, to: number, animated: boolean) => {
+      const fromFrame = frames[from];
+      const toFrame = frames[to];
+      if (!excalidrawAPI || !fromFrame || !toFrame) {
         return;
       }
-      const newFrame = frames[newFrameIndex];
-      const currentFrame = frames[frameIndex];
-
-      const oldFrameElements = getPositionedElementsForFrame(
-        currentFrame,
-        elements,
-      );
-      const newFrameElements = getPositionedElementsForFrame(
-        newFrame,
-        elements,
-      );
-
-      const oldElementsMap = buildElementMap(oldFrameElements);
-      const newElementsMap = buildElementMap(newFrameElements);
-
-      setFrameIndex(newFrameIndex);
-      requestAnimationFrame(() =>
-        animate(excalidrawAPI, oldElementsMap, newElementsMap),
+      animate(
+        excalidrawAPI,
+        buildElementMap(getPositionedElementsForFrame(fromFrame, elements)),
+        buildElementMap(getPositionedElementsForFrame(toFrame, elements)),
+        { duration: animated ? undefined : 0 },
       );
     },
-    [elements, excalidrawAPI, frameIndex, frames],
+    [elements, excalidrawAPI, frames],
+  );
+
+  /**
+   * Navigation never waits on the running transition: an in-flight animation is
+   * superseded, so a stalled one can't swallow input.
+   */
+  const goToFrame = useCallback(
+    (target: number, { animated = true }: { animated?: boolean } = {}) => {
+      if (!Number.isFinite(target) || frames.length === 0) {
+        return;
+      }
+      const to = Math.max(0, Math.min(frames.length - 1, target));
+      const from = frameIndexRef.current;
+      if (to === from) {
+        return;
+      }
+      setFrameIndex(to);
+      showFrame(from, to, animated);
+    },
+    [frameIndexRef, frames.length, setFrameIndex, showFrame],
   );
 
   // Render initial frame and initial state
@@ -125,7 +157,7 @@ export function PresentationScene(props: {
     }
     // Disable rAF throttle since we handle our own rAF
     window.EXCALIDRAW_THROTTLE_RENDER = false;
-    renderFrame(initialFrameIndex);
+    showFrame(initialFrameIndex, initialFrameIndex, false);
     setTimeout(
       () =>
         excalidrawAPI.updateScene({
@@ -142,7 +174,7 @@ export function PresentationScene(props: {
     excalidrawAPI,
     initialFrameIndex,
     loadedInitialFrame,
-    renderFrame,
+    showFrame,
   ]);
 
   // Load files (e.g, images) on elements change
@@ -213,27 +245,174 @@ export function PresentationScene(props: {
     );
   }, [excalidrawAPI, scale]);
 
-  const nextSlide = useCallback(() => {
-    if (animationStartTime === null && frameIndex !== frames.length - 1) {
-      renderFrame(frameIndex + 1);
-    }
-  }, [frameIndex, frames.length, renderFrame]);
+  const nextSlide = useCallback(
+    () => goToFrame(frameIndexRef.current + 1),
+    [frameIndexRef, goToFrame],
+  );
 
-  const prevSlide = useCallback(() => {
-    if (animationStartTime === null && frameIndex !== 0) {
-      renderFrame(frameIndex - 1);
+  const prevSlide = useCallback(
+    () => goToFrame(frameIndexRef.current - 1),
+    [frameIndexRef, goToFrame],
+  );
+
+  // rAF is paused while the tab is hidden or occluded, which is exactly what
+  // happens when the presenter switches windows mid-transition. Land on the
+  // target slide rather than resuming a stale interpolation.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        settleTransition();
+      }
+    };
+    document.addEventListener(EVENT.VISIBILITY_CHANGE, handleVisibilityChange);
+    return () => {
+      document.removeEventListener(
+        EVENT.VISIBILITY_CHANGE,
+        handleVisibilityChange,
+      );
+    };
+  }, []);
+
+  // Keep the URL in sync so the current slide can be reopened or shared, and
+  // honour external hash changes as an immediate jump.
+  useEffect(() => {
+    const hash = `#presentation=${frameIndex}`;
+    if (window.location.hash !== hash) {
+      window.history.replaceState(null, "", hash);
     }
-  }, [frameIndex, renderFrame]);
+  }, [frameIndex]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (isPresentationLink(window.location.href)) {
+        goToFrame(getFrameIndexFromLink(window.location.href), {
+          animated: false,
+        });
+      }
+    };
+    window.addEventListener("hashchange", handleHashChange);
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+    };
+  }, [goToFrame]);
+
+  const [switcherOpen, setSwitcherOpen, switcherOpenRef] = useRefState(false);
+  const [switcherFiles, setSwitcherFiles] = useState<BinaryFiles>({});
+  const [highlightedIndex, setHighlightedIndex, highlightedIndexRef] =
+    useRefState(initialFrameIndex);
+  const [pendingJump, setPendingJump, pendingJumpRef] = useRefState("");
+
+  const openSwitcher = useCallback(() => {
+    setHighlightedIndex(frameIndexRef.current);
+    setSwitcherFiles(excalidrawAPI?.getFiles() ?? {});
+    setSwitcherOpen(true);
+  }, [
+    excalidrawAPI,
+    frameIndexRef,
+    setHighlightedIndex,
+    setSwitcherFiles,
+    setSwitcherOpen,
+  ]);
+
+  const jumpToFrame = useCallback(
+    (target: number) => {
+      setPendingJump("");
+      setSwitcherOpen(false);
+      goToFrame(target, { animated: false });
+    },
+    [goToFrame, setPendingJump, setSwitcherOpen],
+  );
+
+  // Discard a half-typed slide number so the presenter never has to guess what
+  // state the keyboard is in.
+  useEffect(() => {
+    if (!pendingJump) {
+      return;
+    }
+    const handle = setTimeout(
+      () => setPendingJump(""),
+      PENDING_JUMP_TIMEOUT_MS,
+    );
+    return () => clearTimeout(handle);
+  }, [pendingJump, setPendingJump]);
 
   // Event listeners
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      e.stopPropagation();
-      if (e.key === KEYS.ARROW_RIGHT) {
-        nextSlide();
+      // let browser/OS shortcuts (reload, fullscreen, tab switching) through
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
       }
-      if (e.key === KEYS.ARROW_LEFT) {
-        prevSlide();
+      e.stopPropagation();
+
+      const isSwitcherOpen = switcherOpenRef.current;
+      const typedJump = pendingJumpRef.current;
+
+      if (/^[0-9]$/.test(e.key)) {
+        setPendingJump((typedJump + e.key).slice(-4));
+        return;
+      }
+
+      switch (e.key) {
+        case KEYS.ESCAPE:
+          setPendingJump("");
+          setSwitcherOpen(false);
+          return;
+        case KEYS.BACKSPACE:
+          setPendingJump(typedJump.slice(0, -1));
+          return;
+        case KEYS.ENTER:
+          if (typedJump) {
+            jumpToFrame(parseInt(typedJump, 10) - 1);
+          } else if (isSwitcherOpen) {
+            jumpToFrame(highlightedIndexRef.current);
+          }
+          return;
+        case "Home":
+          jumpToFrame(0);
+          return;
+        case "End":
+          jumpToFrame(frames.length - 1);
+          return;
+        case KEYS.G:
+        case "G":
+          if (isSwitcherOpen) {
+            setSwitcherOpen(false);
+          } else {
+            openSwitcher();
+          }
+          return;
+      }
+
+      if (isSwitcherOpen) {
+        const step =
+          (e.key === KEYS.ARROW_RIGHT && 1) ||
+          (e.key === KEYS.ARROW_LEFT && -1) ||
+          (e.key === KEYS.ARROW_DOWN && SWITCHER_COLUMNS) ||
+          (e.key === KEYS.ARROW_UP && -SWITCHER_COLUMNS) ||
+          0;
+        if (step) {
+          setHighlightedIndex(
+            Math.max(
+              0,
+              Math.min(frames.length - 1, highlightedIndexRef.current + step),
+            ),
+          );
+        }
+        return;
+      }
+
+      switch (e.key) {
+        case KEYS.ARROW_RIGHT:
+        case KEYS.ARROW_DOWN:
+        case KEYS.PAGE_DOWN:
+        case KEYS.SPACE:
+          nextSlide();
+          return;
+        case KEYS.ARROW_LEFT:
+        case KEYS.ARROW_UP:
+        case KEYS.PAGE_UP:
+          prevSlide();
       }
     };
 
@@ -253,7 +432,25 @@ export function PresentationScene(props: {
       );
       document.removeEventListener("wheel", handlePointerDownOrWheel, true);
     };
-  }, [frameIndex, frames.length, nextSlide, prevSlide, renderFrame]);
+  }, [
+    frames.length,
+    highlightedIndexRef,
+    jumpToFrame,
+    nextSlide,
+    openSwitcher,
+    pendingJumpRef,
+    prevSlide,
+    setHighlightedIndex,
+    setPendingJump,
+    setSwitcherOpen,
+    switcherOpenRef,
+  ]);
+
+  // Keyboard navigation relies on the document having focus, which can be lost
+  // to browser chrome while the presenter is talking.
+  useEffect(() => {
+    presentationSceneDiv.current?.focus();
+  }, []);
 
   const loadExcalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     setExcalidrawAPI(api);
@@ -261,7 +458,12 @@ export function PresentationScene(props: {
 
   // Render
   return (
-    <div className="presentation-presentation" ref={presentationSceneDiv}>
+    <div
+      className="presentation-presentation"
+      ref={presentationSceneDiv}
+      tabIndex={-1}
+      onPointerDown={() => presentationSceneDiv.current?.focus()}
+    >
       {/* Used for navigating slides using the mouse */}
       <div className="presentation-overlays">
         <div className="presentation-overlay" onClick={prevSlide}></div>
@@ -282,6 +484,38 @@ export function PresentationScene(props: {
           presentationModeEnabled
         />
       </div>
+
+      <button
+        type="button"
+        className="presentation-counter"
+        title="Jump to slide (G)"
+        onClick={openSwitcher}
+      >
+        {pendingJump ? (
+          <>
+            <span className="presentation-counter-pending">{pendingJump}</span>
+            <span className="presentation-counter-hint">press enter</span>
+          </>
+        ) : (
+          <span>
+            {frameIndex + 1} / {frames.length}
+          </span>
+        )}
+      </button>
+
+      {switcherOpen && (
+        <SlideSwitcher
+          appState={appState}
+          elements={elements}
+          files={switcherFiles}
+          frames={frames}
+          currentIndex={frameIndex}
+          highlightedIndex={highlightedIndex}
+          onHighlight={setHighlightedIndex}
+          onSelect={jumpToFrame}
+          onClose={() => setSwitcherOpen(false)}
+        />
+      )}
     </div>
   );
 }

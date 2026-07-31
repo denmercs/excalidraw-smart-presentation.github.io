@@ -182,47 +182,130 @@ const progressAnimation = (
   return intermediate;
 };
 
-/** Non-null while a frame transition is in progress (used to block navigation). */
-export let animationStartTime: number | null = null;
-const ANIMATION_DURATION_MS = 300;
+export const ANIMATION_DURATION_MS = 300;
 
 /**
- * Interpolates between two element maps over ANIMATION_DURATION_MS.
- * Uses performance.now() for elapsed time so progress reaches 1 even when rAF is
- * throttled while the document is in the background.
+ * Browsers stop firing rAF entirely while a tab is hidden or occluded, which is
+ * what happens the moment a presenter switches windows or stops interacting. A
+ * setTimeout still fires in that state, so it is used as a failsafe to settle a
+ * transition whose rAF chain has stalled.
+ */
+const WATCHDOG_GRACE_MS = 1_000;
+
+type Transition = {
+  rafHandle: number | null;
+  watchdogHandle: ReturnType<typeof setTimeout> | null;
+  /** Jump to the final state and release. Safe to call repeatedly. */
+  settle: () => void;
+};
+
+let activeTransition: Transition | null = null;
+
+export const isTransitioning = () => activeTransition !== null;
+
+/**
+ * Finishes the in-flight transition immediately, leaving the scene on the
+ * transition's target frame. No-op when nothing is animating.
+ */
+export const settleTransition = () => {
+  activeTransition?.settle();
+};
+
+/**
+ * Interpolates between two element maps over `duration`, superseding any
+ * transition already in flight.
+ *
+ * The transition owns its rAF handle and a wall-clock watchdog so it always
+ * releases: a stalled rAF chain (hidden tab) or a throwing `updateScene` can
+ * never leave the presentation stuck.
  */
 export const animate = (
   excalidrawAPI: ExcalidrawImperativeAPI,
   oldElements: Map<string, ExcalidrawElement>,
   newElements: Map<string, ExcalidrawElement>,
-  wallStartMs?: number,
+  { duration = ANIMATION_DURATION_MS }: { duration?: number } = {},
 ) => {
-  const wallStart = wallStartMs ?? performance.now();
-  if (animationStartTime === null) {
-    animationStartTime = wallStart;
-  }
-  const elapsed = performance.now() - wallStart;
-  const progress = Math.min(elapsed / ANIMATION_DURATION_MS, 1);
+  // Overlapping rAF chains would fight over updateScene, so land the previous
+  // transition on its target frame before starting from it.
+  settleTransition();
 
-  const names = new Set([...oldElements.keys(), ...newElements.keys()]);
-  const intermediateElements: ExcalidrawElement[] = [];
+  const renderProgress = (progress: number) => {
+    const names = new Set([...oldElements.keys(), ...newElements.keys()]);
+    const intermediateElements: ExcalidrawElement[] = [];
 
-  for (const name of names) {
-    const oldEl = oldElements.get(name);
-    const newEl = newElements.get(name);
-    const intermediate = progressAnimation(oldEl, newEl, progress);
-    if (intermediate) {
-      intermediateElements.push(intermediate);
+    for (const name of names) {
+      const intermediate = progressAnimation(
+        oldElements.get(name),
+        newElements.get(name),
+        progress,
+      );
+      if (intermediate) {
+        intermediateElements.push(intermediate);
+      }
     }
-  }
 
-  excalidrawAPI.updateScene({ elements: intermediateElements });
+    excalidrawAPI.updateScene({ elements: intermediateElements });
+  };
 
-  if (progress < 1) {
-    requestAnimationFrame(() =>
-      animate(excalidrawAPI, oldElements, newElements, wallStart),
-    );
-  } else {
-    animationStartTime = null;
-  }
+  const transition: Transition = {
+    rafHandle: null,
+    watchdogHandle: null,
+    settle: () => {
+      if (activeTransition !== transition) {
+        return;
+      }
+      release();
+      try {
+        renderProgress(1);
+      } catch (error: any) {
+        console.error("Presentation: failed to settle frame transition", error);
+      }
+    },
+  };
+
+  const release = () => {
+    if (transition.rafHandle !== null) {
+      cancelAnimationFrame(transition.rafHandle);
+      transition.rafHandle = null;
+    }
+    if (transition.watchdogHandle !== null) {
+      clearTimeout(transition.watchdogHandle);
+      transition.watchdogHandle = null;
+    }
+    if (activeTransition === transition) {
+      activeTransition = null;
+    }
+  };
+
+  const step = () => {
+    if (activeTransition !== transition) {
+      return;
+    }
+    const progress =
+      duration <= 0
+        ? 1
+        : Math.min((performance.now() - wallStart) / duration, 1);
+
+    try {
+      renderProgress(progress);
+    } catch (error: any) {
+      console.error("Presentation: frame transition failed", error);
+      release();
+      return;
+    }
+
+    if (progress < 1) {
+      transition.rafHandle = requestAnimationFrame(step);
+    } else {
+      release();
+    }
+  };
+
+  const wallStart = performance.now();
+  activeTransition = transition;
+  transition.watchdogHandle = setTimeout(
+    transition.settle,
+    duration + WATCHDOG_GRACE_MS,
+  );
+  step();
 };
