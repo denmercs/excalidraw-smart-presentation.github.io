@@ -22,14 +22,12 @@ import type {
 import { LocalData } from "../data/LocalData";
 import { updateStaleImageStatuses } from "../data/FileManager";
 
-import { SlideSwitcher } from "./SlideSwitcher";
+import { SlideSwitcher, SWITCHER_COLUMNS } from "./SlideSwitcher";
 
 import "./Presentation.scss";
 
 const RE_PRESENTATION_LINK = /^#presentation=(\d+)$/;
 
-/** Must match the column count of `.presentation-switcher-grid`. */
-const SWITCHER_COLUMNS = 4;
 /** How long a partially typed slide number stays pending before it's discarded. */
 const PENDING_JUMP_TIMEOUT_MS = 3_000;
 

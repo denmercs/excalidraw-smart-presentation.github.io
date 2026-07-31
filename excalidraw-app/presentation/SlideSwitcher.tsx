@@ -8,7 +8,8 @@ import type {
   ExcalidrawFrameElement,
 } from "@excalidraw/element/types";
 
-const THUMBNAIL_SCALE = 0.25;
+/** Number of slides per row; drives up/down arrow navigation in the switcher. */
+export const SWITCHER_COLUMNS = 3;
 
 const buildThumbnail = (
   frame: ExcalidrawFrameElement,
@@ -20,7 +21,6 @@ const buildThumbnail = (
     elements: elements as any,
     appState: {
       exportBackground: true,
-      exportScale: THUMBNAIL_SCALE,
       viewBackgroundColor: appState.viewBackgroundColor,
       exportWithDarkMode: appState.theme === THEME.DARK,
       exportEmbedScene: false,
@@ -31,7 +31,19 @@ const buildThumbnail = (
     skipInliningFonts: true,
   });
 
-const Thumbnail = ({ svg }: { svg: SVGSVGElement | null }) => {
+/**
+ * Sized from the frame's own proportions rather than an assumed 16:9, so square
+ * or portrait slides fill the card instead of being letterboxed into a sliver.
+ * The box keeps its size before the SVG arrives, avoiding layout shift as
+ * thumbnails stream in.
+ */
+const Thumbnail = ({
+  frame,
+  svg,
+}: {
+  frame: ExcalidrawFrameElement;
+  svg: SVGSVGElement | null;
+}) => {
   const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -49,7 +61,13 @@ const Thumbnail = ({ svg }: { svg: SVGSVGElement | null }) => {
     };
   }, [svg]);
 
-  return <div className="presentation-slide-thumbnail" ref={container} />;
+  return (
+    <div
+      className="presentation-slide-thumbnail"
+      ref={container}
+      style={{ aspectRatio: `${frame.width} / ${frame.height}` }}
+    />
+  );
 };
 
 export function SlideSwitcher(props: {
@@ -133,7 +151,12 @@ export function SlideSwitcher(props: {
             arrows to browse · enter to jump · esc to cancel
           </span>
         </div>
-        <div className="presentation-switcher-grid">
+        <div
+          className="presentation-switcher-grid"
+          style={{
+            gridTemplateColumns: `repeat(${SWITCHER_COLUMNS}, minmax(0, 1fr))`,
+          }}
+        >
           {frames.map((frame, index) => (
             <button
               key={frame.id}
@@ -145,7 +168,7 @@ export function SlideSwitcher(props: {
               onPointerEnter={() => onHighlight(index)}
               onClick={() => onSelect(index)}
             >
-              <Thumbnail svg={thumbnails.get(frame.id) ?? null} />
+              <Thumbnail frame={frame} svg={thumbnails.get(frame.id) ?? null} />
               <span className="presentation-slide-label">
                 <span className="presentation-slide-number">{index + 1}</span>
                 {frame.name && (
