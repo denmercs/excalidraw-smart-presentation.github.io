@@ -51,10 +51,11 @@ import type {
 import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 
 import {
-  getOrderedRootElementsInFrame,
+  getOrderedRevealUnitsInFrame,
   getProgressiveRevealSequenceFrames,
   actionSetRevealOrder
 } from "../actions/actionProgressiveReveal";
+import type { RevealUnit } from "../actions/actionProgressiveReveal";
 
 import {
   actionDeleteProgressiveRevealColumn,
@@ -190,20 +191,53 @@ const getRevealOrderLabel = (
   return `${t(`element.${el.type}`)} ${index + 1}`;
 };
 
+const getRevealUnitLabel = (
+  unit: RevealUnit,
+  index: number,
+  elementsMap: Map<string, ExcalidrawElement> | undefined
+): string => {
+  const first = unit.elements[0] as NonDeletedExcalidrawElement | undefined;
+  if (!first) {
+    return t("element.group");
+  }
+  if (!unit.isGroup) {
+    return getRevealOrderLabel(first, index, elementsMap);
+  }
+  for (const el of unit.elements) {
+    const name = (el as ExcalidrawElement & { customData?: { name?: string } })
+      .customData?.name;
+    if (name != null && String(name).trim()) {
+      return String(name).trim();
+    }
+  }
+  for (const el of unit.elements) {
+    const preview = getElementContentPreview(
+      el as NonDeletedExcalidrawElement,
+      elementsMap
+    );
+    if (preview) {
+      return t("stats.revealOrderGroup", { label: preview });
+    }
+  }
+  return t("stats.revealOrderGroup", {
+    label: getRevealOrderLabel(first, index, elementsMap)
+  });
+};
+
 type SortableRevealOrderItemProps = {
-  el: NonDeletedExcalidrawElement;
+  unit: RevealUnit;
   index: number;
   elementsMap: Map<string, ExcalidrawElement> | undefined;
   highlightedId: string | null;
   editingId: string | null;
   app: AppClassProperties | undefined;
-  onMouseEnter: (el: NonDeletedExcalidrawElement) => void;
+  onMouseEnter: (unit: RevealUnit) => void;
   onMouseLeave: () => void;
   setEditingId: (id: string | null) => void;
 };
 
 const SortableRevealOrderItem = ({
-  el,
+  unit,
   index,
   elementsMap,
   highlightedId,
@@ -220,12 +254,15 @@ const SortableRevealOrderItem = ({
     transform,
     transition,
     isDragging
-  } = useSortable({ id: el.id });
+  } = useSortable({ id: unit.id });
 
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition
   };
+
+  const first = unit.elements[0] as NonDeletedExcalidrawElement | undefined;
+  const label = getRevealUnitLabel(unit, index, elementsMap);
 
   return (
     <li
@@ -233,10 +270,11 @@ const SortableRevealOrderItem = ({
       style={style}
       className={clsx("selected-shape-actions__reveal-order-item", {
         "selected-shape-actions__reveal-order-item--highlighted":
-          highlightedId === el.id,
-        "selected-shape-actions__reveal-order-item--dragging": isDragging
+          highlightedId === unit.id,
+        "selected-shape-actions__reveal-order-item--dragging": isDragging,
+        "selected-shape-actions__reveal-order-item--group": unit.isGroup
       })}
-      onMouseEnter={() => onMouseEnter(el)}
+      onMouseEnter={() => onMouseEnter(unit)}
       onMouseLeave={onMouseLeave}
     >
       <button
@@ -248,17 +286,17 @@ const SortableRevealOrderItem = ({
       >
         {gripVerticalIcon}
       </button>
-      {editingId === el.id && app ? (
+      {editingId === unit.id && app && first ? (
         <input
           type="text"
           className="selected-shape-actions__reveal-order-input"
-          defaultValue={getRevealOrderLabel(el, index, elementsMap)}
+          defaultValue={label}
           autoFocus
           onBlur={(e) => {
             const value = e.currentTarget.value.trim();
-            app.scene.mutateElement(el, {
+            app.scene.mutateElement(first, {
               customData: {
-                ...(el as NonDeletedExcalidrawElement & {
+                ...(first as NonDeletedExcalidrawElement & {
                   customData?: Record<string, unknown>;
                 }).customData,
                 name: value || undefined
@@ -279,23 +317,28 @@ const SortableRevealOrderItem = ({
         <button
           type="button"
           className="selected-shape-actions__reveal-order-label-btn"
-          onClick={() => app && setEditingId(el.id)}
+          onClick={() => app && setEditingId(unit.id)}
           title={t("stats.revealOrderRenameHint")}
         >
-          {getRevealOrderLabel(el, index, elementsMap)}
+          {label}
         </button>
+      )}
+      {unit.isGroup && (
+        <span className="selected-shape-actions__reveal-order-group-badge">
+          {t("stats.revealOrderGroupCount", { count: unit.elements.length })}
+        </span>
       )}
     </li>
   );
 };
 
 const RevealOrderBlock = ({
-  roots,
+  units,
   app,
   elementsMap,
   setAppState: setAppStateProp
 }: {
-  roots: readonly NonDeletedExcalidrawElement[];
+  units: readonly RevealUnit[];
   app?: AppClassProperties;
   elementsMap?: Map<string, ExcalidrawElement>;
   /** When provided (e.g. from LayerUI), avoids relying on context which can be uninitialized in isolated/subtrees */
@@ -304,39 +347,42 @@ const RevealOrderBlock = ({
   const actionManager = useExcalidrawActionManager();
   const setAppStateFromContext = useExcalidrawSetAppState();
   const setAppState = setAppStateProp ?? setAppStateFromContext;
-  const [order, setOrder] = useState<string[]>(() => roots.map((r) => r.id));
+  const [order, setOrder] = useState<string[]>(() => units.map((u) => u.id));
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [previewStep, setPreviewStep] = useState<number>(-1);
-  const prevRootIdSetRef = useRef<string>("");
+  const prevUnitIdSetRef = useRef<string>("");
 
-  // Sync order from roots only when the set of elements in the frame changes
+  // Sync order from units only when the set of steps in the frame changes
   // (not on every re-render), so hover highlight doesn’t reset user reordering.
   useEffect(() => {
-    const rootIdSet = roots
-      .map((r) => r.id)
+    const unitIdSet = units
+      .map((u) => u.id)
       .sort()
       .join(",");
-    if (prevRootIdSetRef.current !== rootIdSet) {
-      prevRootIdSetRef.current = rootIdSet;
-      setOrder(roots.map((r) => r.id));
+    if (prevUnitIdSetRef.current !== unitIdSet) {
+      prevUnitIdSetRef.current = unitIdSet;
+      setOrder(units.map((u) => u.id));
     }
-  }, [roots]);
+  }, [units]);
 
   const orderMap = new Map(order.map((id, i) => [id, i]));
-  const sortedRoots = [...roots].sort(
+  const sortedUnits = [...units].sort(
     (a, b) => (orderMap.get(a.id) ?? 0) - (orderMap.get(b.id) ?? 0)
   );
-  const sortedRootsRef = useRef(sortedRoots);
-  sortedRootsRef.current = sortedRoots;
+  const sortedUnitsRef = useRef(sortedUnits);
+  sortedUnitsRef.current = sortedUnits;
+
+  const elementsUpToStep = (step: number) =>
+    sortedUnitsRef.current.slice(0, step + 1).flatMap((unit) => unit.elements);
 
   // Preview mode: highlight on canvas the elements revealed up to current step.
-  // Use ref for sortedRoots so we don't retrigger on every render (sortedRoots is a new array each time).
+  // Use ref for sortedUnits so we don't retrigger on every render (sortedUnits is a new array each time).
   useEffect(() => {
     if (previewStep < 0) {
       return;
     }
-    const toHighlight = sortedRootsRef.current.slice(0, previewStep + 1);
+    const toHighlight = elementsUpToStep(previewStep);
     setAppState((prev) => ({ ...prev, elementsToHighlight: toHighlight }));
   }, [previewStep, setAppState]);
 
@@ -348,10 +394,10 @@ const RevealOrderBlock = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup on unmount only
   }, []);
 
-  const handleMouseEnter = (el: NonDeletedExcalidrawElement) => {
-    setHighlightedId(el.id);
+  const handleMouseEnter = (unit: RevealUnit) => {
+    setHighlightedId(unit.id);
     if (previewStep < 0) {
-      setAppState((prev) => ({ ...prev, elementsToHighlight: [el] }));
+      setAppState((prev) => ({ ...prev, elementsToHighlight: unit.elements }));
     }
   };
 
@@ -398,13 +444,13 @@ const RevealOrderBlock = ({
   };
   const previewNext = () => {
     setPreviewStep((s) =>
-      s >= sortedRoots.length - 1 ? sortedRoots.length - 1 : s + 1
+      s >= sortedUnits.length - 1 ? sortedUnits.length - 1 : s + 1
     );
   };
   const nextLabel =
-    previewStep >= 0 && previewStep < sortedRoots.length - 1
-      ? getRevealOrderLabel(
-          sortedRoots[previewStep + 1],
+    previewStep >= 0 && previewStep < sortedUnits.length - 1
+      ? getRevealUnitLabel(
+          sortedUnits[previewStep + 1],
           previewStep + 1,
           elementsMap
         )
@@ -432,7 +478,7 @@ const RevealOrderBlock = ({
             <span className="selected-shape-actions__reveal-order-step">
               {t("stats.revealOrderStep", {
                 current: previewStep + 1,
-                total: sortedRoots.length
+                total: sortedUnits.length
               })}
               {nextLabel != null && (
                 <span className="selected-shape-actions__reveal-order-next">
@@ -455,7 +501,7 @@ const RevealOrderBlock = ({
                 type="button"
                 className="selected-shape-actions__reveal-order-preview-btn"
                 onClick={previewNext}
-                disabled={previewStep === sortedRoots.length - 1}
+                disabled={previewStep === sortedUnits.length - 1}
                 title={t("stats.revealOrderNext")}
                 aria-label={t("stats.revealOrderNext")}
               >
@@ -481,10 +527,10 @@ const RevealOrderBlock = ({
           strategy={verticalListSortingStrategy}
         >
           <ul className="selected-shape-actions__reveal-order-list">
-            {sortedRoots.map((el, index) => (
+            {sortedUnits.map((unit, index) => (
               <SortableRevealOrderItem
-                key={el.id}
-                el={el}
+                key={unit.id}
+                unit={unit}
                 index={index}
                 elementsMap={elementsMap}
                 highlightedId={highlightedId}
@@ -560,8 +606,8 @@ export const SelectedShapeActions = ({
 
   const singleFrameSelected =
     targetElements.length === 1 && isFrameLikeElement(targetElements[0]);
-  const revealOrderRoots = singleFrameSelected
-    ? getOrderedRootElementsInFrame(
+  const revealOrderUnits = singleFrameSelected
+    ? getOrderedRevealUnitsInFrame(
         app.scene.getNonDeletedElements(),
         targetElements[0].id,
         elementsMap
@@ -700,12 +746,12 @@ export const SelectedShapeActions = ({
         </fieldset>
       )}
       {singleFrameSelected &&
-        (revealOrderRoots.length > 0 || canDeleteProgressiveRevealColumn) && (
+        (revealOrderUnits.length > 0 || canDeleteProgressiveRevealColumn) && (
           <fieldset>
             <legend>{t("stats.revealOrder")}</legend>
-            {revealOrderRoots.length > 0 && (
+            {revealOrderUnits.length > 0 && (
               <RevealOrderBlock
-                roots={revealOrderRoots}
+                units={revealOrderUnits}
                 app={app}
                 elementsMap={elementsMap}
                 setAppState={setAppStateProp}

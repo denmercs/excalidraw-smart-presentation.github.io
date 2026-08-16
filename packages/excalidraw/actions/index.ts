@@ -105,4 +105,5 @@ export {
   generateProgressiveRevealFromFrame,
   getOverviewFrame,
   getOrderedRootElementsInFrame,
+  getOrderedRevealUnitsInFrame,
 } from "./actionProgressiveReveal";

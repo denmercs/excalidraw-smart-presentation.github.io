@@ -70,14 +70,16 @@ https://github.com/user-attachments/assets/05e9a464-6e82-492b-9961-af0500822534
 
 https://github.com/user-attachments/assets/6f5cc273-15b3-4c63-aa4c-2b67f6051e03
 
-### Progressive reveal (one element per slide)
+### Progressive reveal (one step per slide)
 
-You can build slides where each frame adds one more element to the previous frame:
+You can build slides where each frame adds one more **step** to the previous frame. A step is either a single shape, or a **group** of shapes that appear together:
 
 1. **Frame 1:** One shape (e.g. a circle).
 2. **Frame 2:** The same shape + a second element (e.g. circle + arrow).
 3. **Frame 3:** Same shape + second element + a third (e.g. circle + arrow + circle).
 4. And so on.
+
+**Show several shapes at once:** Select them and **Group** (`Ctrl/Cmd+G`). Grouped shapes count as **one row** in Reveal order and appear together on the same slide.
 
 **How to do it:**
 

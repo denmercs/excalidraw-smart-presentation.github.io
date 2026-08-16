@@ -11,7 +11,6 @@ import {
 } from "@excalidraw/element";
 import { arrayToMap } from "@excalidraw/common";
 import type { Mutable } from "@excalidraw/common/utility-types";
-import { getSelectedElements } from "../scene";
 import { register } from "./register";
 import type { AppClassProperties, AppState, UIAppState } from "../types";
 import type { ExcalidrawElement } from "@excalidraw/element/types";
@@ -61,6 +60,144 @@ export const getOrderedRootElementsInFrame = (
   return roots;
 };
 
+/**
+ * One progressive-reveal step. An Excalidraw group (Ctrl/Cmd+G) is a single
+ * unit so its members appear together; ungrouped shapes are one unit each.
+ */
+export type RevealUnit = {
+  /** Outermost group id, or the single element's id if ungrouped. */
+  id: string;
+  isGroup: boolean;
+  elements: ExcalidrawElement[];
+};
+
+const getOutermostGroupId = (el: ExcalidrawElement): string | null =>
+  el.groupIds.length > 0 ? el.groupIds[el.groupIds.length - 1] : null;
+
+/**
+ * Collapse frame children into reveal steps. Grouped shapes share one step,
+ * ordered by the first member's revealOrder / index.
+ */
+export const getOrderedRevealUnitsInFrame = (
+  allElements: readonly ExcalidrawElement[],
+  frameId: string,
+  elementsMap: Map<string, ExcalidrawElement>,
+): RevealUnit[] => {
+  const roots = getOrderedRootElementsInFrame(
+    allElements,
+    frameId,
+    elementsMap,
+  );
+  const units: RevealUnit[] = [];
+  const groupToUnit = new Map<string, RevealUnit>();
+
+  for (const el of roots) {
+    const groupId = getOutermostGroupId(el);
+    if (!groupId) {
+      units.push({ id: el.id, isGroup: false, elements: [el] });
+      continue;
+    }
+    const existing = groupToUnit.get(groupId);
+    if (existing) {
+      existing.elements.push(el);
+    } else {
+      const unit: RevealUnit = {
+        id: groupId,
+        isGroup: true,
+        elements: [el],
+      };
+      groupToUnit.set(groupId, unit);
+      units.push(unit);
+    }
+  }
+
+  // A leftover 1-member group is treated as a normal item.
+  return units.map((unit) =>
+    unit.elements.length < 2
+      ? { id: unit.elements[0].id, isGroup: false, elements: unit.elements }
+      : unit,
+  );
+};
+
+const resolveRevealUnitsFromOrder = (
+  units: RevealUnit[],
+  orderedIds: string[] | null,
+): RevealUnit[] => {
+  if (orderedIds === null) {
+    return units;
+  }
+  const used = new Set<string>();
+  const resolved: RevealUnit[] = [];
+  for (const id of orderedIds) {
+    const unit =
+      units.find((u) => u.id === id) ??
+      units.find((u) => u.elements.some((el) => el.id === id));
+    if (unit && !used.has(unit.id)) {
+      used.add(unit.id);
+      resolved.push(unit);
+    }
+  }
+  for (const unit of units) {
+    if (!used.has(unit.id)) {
+      resolved.push(unit);
+    }
+  }
+  return resolved;
+};
+
+const cloneRootIntoFrame = (
+  source: ExcalidrawElement,
+  sourceFrame: ExcalidrawFrameLikeElement,
+  targetFrame: ExcalidrawFrameLikeElement,
+  appState: Pick<AppState, "editingGroupId">,
+  groupIdMap: Map<GroupId, GroupId>,
+  elementsMap: Map<string, ExcalidrawElement>,
+): ExcalidrawElement[] => {
+  const cloned: ExcalidrawElement[] = [];
+  const dup = duplicateElement(
+    appState.editingGroupId ?? null,
+    groupIdMap,
+    source,
+    true,
+  ) as Mutable<ExcalidrawElement>;
+  dup.frameId = targetFrame.id;
+  dup.x = targetFrame.x + (source.x - sourceFrame.x);
+  dup.y = targetFrame.y + (source.y - sourceFrame.y);
+  dup.customData = {
+    ...dup.customData,
+    name: source.customData?.name ?? source.id,
+  };
+  cloned.push(dup);
+
+  const bound = getBoundTextElement(source, elementsMap);
+  if (bound) {
+    const dupBound = duplicateElement(
+      appState.editingGroupId ?? null,
+      groupIdMap,
+      bound,
+      true,
+    ) as Mutable<ExcalidrawElement>;
+    dupBound.frameId = targetFrame.id;
+    dupBound.x = targetFrame.x + (bound.x - sourceFrame.x);
+    dupBound.y = targetFrame.y + (bound.y - sourceFrame.y);
+    dupBound.customData = {
+      ...dupBound.customData,
+      name: bound.customData?.name ?? bound.id,
+    };
+    if ("containerId" in dupBound) {
+      dupBound.containerId = dup.id;
+    }
+    if ("boundElements" in dup && dup.boundElements) {
+      (dup as Mutable<typeof dup>).boundElements = [
+        { id: dupBound.id, type: "text" as const },
+      ];
+    }
+    cloned.push(dupBound);
+  }
+
+  return cloned;
+};
+
 /** Find the single frame named "Start" (case-insensitive, trimmed). Returns null if not exactly one. */
 export const getOverviewFrame = (
   elements: readonly ExcalidrawElement[],
@@ -107,7 +244,8 @@ export type GenerateProgressiveRevealOptions = {
 /**
  * Replaces the selected diagram frame with N slide frames:
  * - Removes the original frame and all its children from the scene.
- * - Creates N new frames: frame 1 has element 1, frame 2 has elements 1+2, ..., frame N has all N.
+ * - Creates N new frames: frame 1 has unit 1, frame 2 has units 1+2, ..., frame N has all N.
+ *   A unit is either one ungrouped element or one Excalidraw group (shown together).
  * - Duplicated elements share stable customData.name for presentation animation.
  * Returns the full new elements array (rest of scene + new frames and their content).
  */
@@ -120,27 +258,29 @@ export function generateProgressiveRevealFromFrame(
   const { markGenerated = false } = options;
   const allElements = getNonDeletedElements(elements);
   const elementsMap = arrayToMap(allElements);
-  const roots = getOrderedRootElementsInFrame(
+  const units = getOrderedRevealUnitsInFrame(
     allElements,
     diagramFrame.id,
     elementsMap,
   );
-  const n = roots.length;
+  const n = units.length;
   if (n === 0) {
     return Array.isArray(elements) ? [...elements] : Array.from(elements);
   }
 
   const idsToRemove = new Set<string>();
   idsToRemove.add(diagramFrame.id);
-  for (const el of roots) {
-    idsToRemove.add(el.id);
-    const bound = getBoundTextElement(el, elementsMap);
-    if (bound) idsToRemove.add(bound.id);
+  for (const unit of units) {
+    for (const el of unit.elements) {
+      idsToRemove.add(el.id);
+      const bound = getBoundTextElement(el, elementsMap);
+      if (bound) idsToRemove.add(bound.id);
+    }
   }
 
-  const otherElements = (Array.isArray(elements) ? elements : Array.from(elements.values())).filter(
-    (e) => !idsToRemove.has(e.id),
-  );
+  const otherElements = (
+    Array.isArray(elements) ? elements : Array.from(elements.values())
+  ).filter((e) => !idsToRemove.has(e.id));
 
   const frameWidth = Math.max(
     MIN_FRAME_WIDTH,
@@ -152,11 +292,9 @@ export function generateProgressiveRevealFromFrame(
   );
 
   const newElements: ExcalidrawElement[] = [];
-  const groupIdMap = new Map<GroupId, GroupId>();
 
   for (let i = 1; i <= n; i++) {
-    const frameName =
-      i === 1 ? OVERVIEW_FRAME_NAME : `Frame ${i - 1}`;
+    const frameName = i === 1 ? OVERVIEW_FRAME_NAME : `Frame ${i - 1}`;
     const newFrame = newFrameElement({
       x: diagramFrame.x,
       y: diagramFrame.y + (i - 1) * (frameHeight + FRAME_GAP),
@@ -172,45 +310,20 @@ export function generateProgressiveRevealFromFrame(
     }
     newElements.push(newFrame);
 
+    // Fresh group ids per slide so copies on different frames stay independent.
+    const groupIdMap = new Map<GroupId, GroupId>();
     for (let j = 0; j < i; j++) {
-      const Ej = roots[j];
-      const dup = duplicateElement(
-        appState.editingGroupId ?? null,
-        groupIdMap,
-        Ej,
-        true,
-      ) as Mutable<ExcalidrawElement>;
-      dup.frameId = newFrame.id;
-      dup.x = newFrame.x + (Ej.x - diagramFrame.x);
-      dup.y = newFrame.y + (Ej.y - diagramFrame.y);
-      dup.customData = {
-        ...dup.customData,
-        name: Ej.customData?.name ?? Ej.id,
-      };
-      newElements.push(dup);
-
-      const bound = getBoundTextElement(Ej, elementsMap);
-      if (bound) {
-        const dupBound = duplicateElement(
-          appState.editingGroupId ?? null,
-          groupIdMap,
-          bound,
-          true,
-        ) as Mutable<ExcalidrawElement>;
-        dupBound.frameId = newFrame.id;
-        dupBound.x = newFrame.x + (bound.x - diagramFrame.x);
-        dupBound.y = newFrame.y + (bound.y - diagramFrame.y);
-        dupBound.customData = {
-          ...dupBound.customData,
-          name: bound.customData?.name ?? bound.id,
-        };
-        if ("containerId" in dupBound) dupBound.containerId = dup.id;
-        if ("boundElements" in dup && dup.boundElements) {
-          (dup as Mutable<typeof dup>).boundElements = [
-            { id: dupBound.id, type: "text" as const },
-          ];
-        }
-        newElements.push(dupBound);
+      for (const source of units[j].elements) {
+        newElements.push(
+          ...cloneRootIntoFrame(
+            source,
+            diagramFrame,
+            newFrame,
+            appState,
+            groupIdMap,
+            elementsMap,
+          ),
+        );
       }
     }
   }
@@ -228,8 +341,8 @@ export const actionCreateProgressiveReveal = register({
     if (!isFrameLikeElement(frame)) return false;
     const all = getNonDeletedElements(elements);
     const elementsMap = arrayToMap(all);
-    const roots = getOrderedRootElementsInFrame(all, frame.id, elementsMap);
-    return roots.length >= 1;
+    const units = getOrderedRevealUnitsInFrame(all, frame.id, elementsMap);
+    return units.length >= 1;
   },
   perform: (elements, appState, _, app) => {
     const selected = app.scene.getSelectedElements(appState);
@@ -248,8 +361,8 @@ export const actionCreateProgressiveReveal = register({
 
     const all = getNonDeletedElements(elements);
     const elementsMap = arrayToMap(all);
-    const roots = getOrderedRootElementsInFrame(all, frame.id, elementsMap);
-    if (roots.length === 0) {
+    const units = getOrderedRevealUnitsInFrame(all, frame.id, elementsMap);
+    if (units.length === 0) {
       app.setToast?.({
         message:
           "Add at least one shape or element inside the frame (not only text labels).",
@@ -279,7 +392,7 @@ export const actionCreateProgressiveReveal = register({
     })();
 
     app.setToast?.({
-      message: `Created ${roots.length} slide${roots.length === 1 ? "" : "s"}.`,
+      message: `Created ${units.length} slide${units.length === 1 ? "" : "s"}.`,
       duration: 2500,
     });
 
@@ -296,7 +409,7 @@ export const actionCreateProgressiveReveal = register({
   },
 });
 
-/** Assign reveal order 0, 1, 2, ... to root elements in the selected frame (current order becomes the sequence). */
+/** Assign reveal order 0, 1, 2, ... to reveal units in the selected frame (grouped shapes share one order). */
 export const actionSetRevealOrder = register({
   name: "setRevealOrder",
   label: "labels.setRevealOrder",
@@ -307,8 +420,8 @@ export const actionSetRevealOrder = register({
     if (!isFrameLikeElement(frame)) return false;
     const all = getNonDeletedElements(elements);
     const elementsMap = arrayToMap(all);
-    const roots = getOrderedRootElementsInFrame(all, frame.id, elementsMap);
-    return roots.length >= 1;
+    const units = getOrderedRevealUnitsInFrame(all, frame.id, elementsMap);
+    return units.length >= 1;
   },
   perform: (elements, appState, value, app) => {
     const frame = app.scene.getSelectedElements(appState)[0];
@@ -321,8 +434,12 @@ export const actionSetRevealOrder = register({
     }
     const all = getNonDeletedElements(elements);
     const elementsMap = arrayToMap(all);
-    const defaultRoots = getOrderedRootElementsInFrame(all, frame.id, elementsMap);
-    // Optional custom order: value is array of ids, or { order: string[], silent?: boolean }
+    const defaultUnits = getOrderedRevealUnitsInFrame(
+      all,
+      frame.id,
+      elementsMap,
+    );
+    // Optional custom order: value is array of unit/element ids, or { order: string[], silent?: boolean }
     const valueOrder =
       Array.isArray(value) && value.length > 0 && typeof value[0] === "string"
         ? (value as string[])
@@ -335,41 +452,38 @@ export const actionSetRevealOrder = register({
       typeof value === "object" &&
       value !== null &&
       (value as { silent?: boolean }).silent === true;
-    const orderedIds = valueOrder;
-    const roots: ExcalidrawElement[] =
-      orderedIds !== null
-        ? (orderedIds
-            .map((id) => elementsMap.get(id))
-            .filter(
-              (el) =>
-                el != null &&
-                el.frameId === frame.id &&
-                !(el.type === "text" && "containerId" in el && el.containerId),
-            ) as ExcalidrawElement[])
-        : defaultRoots;
+    const orderedUnits = resolveRevealUnitsFromOrder(defaultUnits, valueOrder);
 
-    const rootIds = new Set(roots.map((r) => r.id));
-    const elementsArray = Array.isArray(elements) ? elements : Array.from(elements);
+    const unitIndexByElementId = new Map<string, number>();
+    orderedUnits.forEach((unit, i) => {
+      for (const el of unit.elements) {
+        unitIndexByElementId.set(el.id, i);
+      }
+    });
+    const elementsArray = Array.isArray(elements)
+      ? elements
+      : Array.from(elements);
     const nextElementsMap = arrayToMap(
       getNonDeletedElements(elementsArray) as ExcalidrawElement[],
     );
     const nextElements = elementsArray.map((el) => {
-      if (!rootIds.has(el.id)) return el;
-      const i = roots.findIndex((r) => r.id === el.id);
-      const customData = (el as ExcalidrawElement & { customData?: Record<string, unknown> })
-        .customData;
-      return mutateElement(
-        el as Mutable<ExcalidrawElement>,
-        nextElementsMap,
-        {
-          customData: { ...customData, revealOrder: i },
-        },
-      );
+      const i = unitIndexByElementId.get(el.id);
+      if (i === undefined) {
+        return el;
+      }
+      const customData = (
+        el as ExcalidrawElement & { customData?: Record<string, unknown> }
+      ).customData;
+      return mutateElement(el as Mutable<ExcalidrawElement>, nextElementsMap, {
+        customData: { ...customData, revealOrder: i },
+      });
     });
 
     if (!silent) {
       app.setToast?.({
-        message: `Reveal order set for ${roots.length} element${roots.length === 1 ? "" : "s"}.`,
+        message: `Reveal order set for ${orderedUnits.length} step${
+          orderedUnits.length === 1 ? "" : "s"
+        }.`,
         duration: 2500,
       });
     }
